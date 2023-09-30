@@ -52,7 +52,7 @@ const getUserById = async(req, res = response) => {
 
 const createUser = async(req, res = response) => {
     
-    const { email, password } = req.body;
+    let { email, password } = req.body;
 
     try {
 

@@ -5,14 +5,14 @@
 
 const { Router } = require('express');
 const router = Router();
-const { getAllServiceAreas, getAllOffers, processOffer } = require('../controllers/fish');
+const { getAllServiceAreas, processOffer, getSMSSEND } = require('../controllers/fish');
 
 router.get('/', (req, res) => {
   res.send('fish routes!');
 });
 
 router.get('/getAllServiceAreas', getAllServiceAreas);
-// router.get('/getAllOffers', getAllOffers);
+router.get('/getSMSSEND', getSMSSEND);
 router.post('/processOffer', processOffer);
 
 module.exports = router;

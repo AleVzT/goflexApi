@@ -6,6 +6,8 @@ const { offerResponse } = require('../helpers/offerResponse');
 const { notificationSEND } = require('../helpers/send');
 
 let globalUser = null;
+let allServices = null;
+
 const allHeaders = {
   AmazonApiRequest: {
     'x-amzn-identity-auth-domain': 'api.amazon.com',
@@ -96,45 +98,6 @@ async function getAllServiceAreas(req, res) {
   }
 }
 
-async function getAllOffers(req, res) { /* se consultan todas las ofertas disponibles */
-  let requestHeaders = allHeaders["FlexCapacityRequest"];
-  try {
-    const token = req.headers['x-token'];
-    const userData = await verifyJWT(token);
-
-    globalUser = await Users.findById(userData.uid );
-    if(!globalUser.refreshToken) {
-      return res.status(500).json({ error: 'Error getting job offers: refreshToken not found' });
-    }
-
-    const accessToken = await getFlexAccessToken(); /* se genera un nuevo accessToken con el refresh token  */
-    if(!accessToken) {
-      return res.status(500).json({ error: 'Error getting job offers: accessToken not found' });
-    }
-    requestHeaders["x-amz-access-token"] = accessToken;
-
-    const offersRequestBody = {
-      "apiVersion": "V2",
-      "filters": {
-        "serviceAreaFilter": [],
-        "timeFilter": {
-          "startTime": "00:00",
-          "endTime": "23:59",
-        },
-      },
-      "serviceAreaIds": await getEligibleServiceAreas() /* se consultan los id de todos los servicios */
-    }
-  
-    let response = await axios.post("https://flex-capacity-na.amazon.com/GetOffersForProviderPost", offersRequestBody, {
-      headers: requestHeaders,
-    });
-
-    res.json(response.data.offerList);
-  }catch (error) {
-    res.status(500).json({ error: 'Error obtaining job offers, getAllOffers!' });
-  }
-}
-
 async function processOffer(req, res) {
   const {
     minBlockRate, /* Minimo rate block - si baseOn === 'BLOCK' = minHourPrice */ 
@@ -146,9 +109,9 @@ async function processOffer(req, res) {
     startRunningAt,    /* startRunning hora para iniciar a buscar */
     fromTime,   /* From time. Iniciar a trabajar */
   } = req.body;
-  // const horaCompletaEjecucion = `${startDate} ${startRunningAt}`; se usaria en el FE
 
   const token = req.headers['x-token'];
+  let warehouseSelect = null;
 
   try {
     const userData = await verifyJWT(token);
@@ -156,6 +119,13 @@ async function processOffer(req, res) {
     globalUser = await Users.findById(userData.uid );
     if(!globalUser.refreshToken) {
       return res.status(500).json({ error: 'Error getting job offers: refreshToken not found' });
+    }
+
+    if(desiredWareHouses.length === 0) {
+      allServices = await getEligibleServiceAreas();
+      warehouseSelect = allServices.map(areas => areas.serviceAreaId);
+    } else {
+      warehouseSelect = desiredWareHouses;
     }
 
     const offersRequestBody = {
@@ -167,7 +137,7 @@ async function processOffer(req, res) {
           "endTime": "23:59",
         },
       },
-      "serviceAreaIds": desiredWareHouses.length > 0 ? desiredWareHouses : await getEligibleServiceAreas()
+      "serviceAreaIds": warehouseSelect
     };
 
     let selectedOffer = [];
@@ -175,8 +145,18 @@ async function processOffer(req, res) {
 
     for (const offerResponseObject of offersList) {
       const offer = new offerResponse(offerResponseObject);
+      let dateOffer = null;
+      let dateFilter = null;
+      if(startDate) {
+        dateOffer = new Date(offer.startTime);
+        dateFilter = new Date(startDate);
+      }
 
       if (minBlockRate && offer.blockRate < minBlockRate) {
+        continue;
+      }
+
+      if (startDate && dateOffer < dateFilter) {
         continue;
       }
     
@@ -229,7 +209,8 @@ async function acceptOffer(offer, res, req) {
   let response = await axios.post("https://flex-capacity-na.amazon.com/AcceptOffer", data, { headers: requestHeaders });
   if (response.status === 200){
     const bodySMS = {
-      user: globalUser, 
+      user: globalUser,
+      allServices,
       offer
     };
     await notificationSEND(bodySMS);
@@ -266,7 +247,7 @@ async function getEligibleServiceAreas(req, res) {
       headers: requestHeaders,
     });
   
-    return response.data.serviceAreaPoolList.map(areas => areas.serviceAreaId);
+    return response.data.serviceAreaPoolList;
   }catch (error) {
     res.status(500).json({ error: 'Error obtaining eligible service area' });
   }
@@ -330,9 +311,36 @@ async function registerAccount(reg_access_token, device_id, res, req) {
   }
 }
 
+async function getSMSSEND() { /* PARA HACER PRUEBAS */
+  const bodySMS = {
+    user: {
+      email: 'unaprueba@gmail.com',
+      telefono: '+14707033710'
+    }, 
+    allServices:[
+      {
+          "serviceAreaId": "539ce8be-13d9-4c33-8224-cd0031c1b83f",
+          "serviceAreaName": "Norcross GA (VGA1) - Sub Same-Day"
+      },
+      {
+          "serviceAreaId": "8b6632cb-4ae2-4993-97d0-72d8340fe1be",
+          "serviceAreaName": "Lithia Springs GA (VGA2) - Sub Same-Day"
+      },
+    ],
+    offer : {
+      location: '8b6632cb-4ae2-4993-97d0-72d8340fe1be',
+      startTime: 'Sun Oct 01 2023 07:30:00 GMT-0300 (hora estándar de Argentina)',
+      blockDuration: '2.5',
+      blockRate: 50,
+    }
+  };
+  await notificationSEND(bodySMS);
+}
+
 module.exports = {
   getAllServiceAreas,
-  getAllOffers,
   processOffer,
   registerAccount,
+  getSMSSEND,
+  getEligibleServiceAreas,
 }
