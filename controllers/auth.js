@@ -8,6 +8,7 @@ const loginUser = async(req, res = response) => {
   const { email, password } = req.body;
 
   try {
+    email = email.toLowerCase();
     const usuario = await Users.findOne({ email });
     if ( !usuario ) {
       return res.status(400).json({
@@ -21,6 +22,13 @@ const loginUser = async(req, res = response) => {
       return res.status(400).json({
         ok: false,
         msg: 'email and/or password are not correct!'
+      });
+    }
+
+    if (!usuario.active) {
+      return res.status(401).json({
+        ok: false,
+        msg: 'User is not active. Please contact the administrator.',
       });
     }
 

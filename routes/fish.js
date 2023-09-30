@@ -12,7 +12,7 @@ router.get('/', (req, res) => {
 });
 
 router.get('/getAllServiceAreas', getAllServiceAreas);
-router.get('/getAllOffers', getAllOffers);
+// router.get('/getAllOffers', getAllOffers);
 router.post('/processOffer', processOffer);
 
 module.exports = router;

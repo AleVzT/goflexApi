@@ -56,6 +56,8 @@ const createUser = async(req, res = response) => {
 
     try {
 
+        email = email.toLowerCase();
+
         let usuario = await Users.findOne({ email });
         
         if ( usuario ) {

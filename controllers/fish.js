@@ -170,7 +170,7 @@ async function processOffer(req, res) {
       "serviceAreaIds": desiredWareHouses.length > 0 ? desiredWareHouses : await getEligibleServiceAreas()
     };
 
-    let selectedOffer = null;
+    let selectedOffer = [];
     const offersList = await getOffers(offersRequestBody);
 
     for (const offerResponseObject of offersList) {
@@ -195,16 +195,22 @@ async function processOffer(req, res) {
           continue;
         }
       }
-      selectedOffer = offer;
-      break;
+      const respAcceptOffer = await acceptOffer(offer);
+
+      if(respAcceptOffer.status === 200) {
+        selectedOffer.push(offer);
+      }
     }
-    if(selectedOffer) {
-      const respAcceptOffer = await acceptOffer(selectedOffer);
-      res.json({ ok: true, data: respAcceptOffer.data });
-    } else {
-      res.json({ ok: false, msj: 'No offers available' });
-    }
+
+    res.json({
+      offersList,
+      offersAccept: {
+        ok: selectedOffer.length !== 0 ? true : false,
+        offer: selectedOffer
+      }
+    });
   } catch(error) {
+    console.log('processOffer', error);
     res.status(500).json({
       ok: false,
       msg: 'Please talk to administrator, processOffer'
@@ -217,40 +223,35 @@ async function acceptOffer(offer, res, req) {
   requestHeaders["X-Amz-Date"] = getAmzDate();
   const data = { offerId: offer.id};
 
-  try {
-    const accessToken = await getFlexAccessToken();
-    requestHeaders["x-amz-access-token"] = accessToken;
-    
-    let response = await axios.post("https://flex-capacity-na.amazon.com/AcceptOffer", data, { headers: requestHeaders });
-    
-    const user = await Users.findById(userId);
+  const accessToken = await getFlexAccessToken();
+  requestHeaders["x-amz-access-token"] = accessToken;
+  
+  let response = await axios.post("https://flex-capacity-na.amazon.com/AcceptOffer", data, { headers: requestHeaders });
+  if (response.status === 200){
     const bodySMS = {
-      numberTo: user.telefono, 
-      blockId: offer.id
-    } 
+      user: globalUser, 
+      offer
+    };
     await notificationSEND(bodySMS);
     return response;
-  } catch(error) {
-    res.status(500).json({
-      ok: false,
-      msg: 'Please talk to administrator, acceptOffer'
-    });
+  } else {
+    return { status: 401 };
   }
+  
 }
 
 async function getOffers(offersRequestBody) {
   let requestHeaders = allHeaders["FlexCapacityRequest"];
-  try {
-    const accessToken = await getFlexAccessToken();
-    requestHeaders["x-amz-access-token"] = accessToken;
-  
-    let response = await axios.post("https://flex-capacity-na.amazon.com/GetOffersForProviderPost", offersRequestBody, {
-      headers: requestHeaders,
-    });
+  const accessToken = await getFlexAccessToken();
+  requestHeaders["x-amz-access-token"] = accessToken;
 
+  let response = await axios.post("https://flex-capacity-na.amazon.com/GetOffersForProviderPost", offersRequestBody, {
+    headers: requestHeaders,
+  });
+  if(response.status === 200) {
     return response.data.offerList;
-  }catch (error) {
-    res.status(500).json({ error: 'Error obtaining job offers' });
+  } else {
+    return [];
   }
 }
 
