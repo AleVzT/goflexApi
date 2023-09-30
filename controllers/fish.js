@@ -190,10 +190,13 @@ async function processOffer(req, res) {
       }
     });
   } catch(error) {
-    console.log('processOffer', error);
-    res.status(500).json({
-      ok: false,
-      msg: 'Please talk to administrator, processOffer'
+    console.log('Error en la solicitud processOffer', error);
+    res.json({
+      offersList: [],
+      offersAccept: {
+        ok: false,
+        offer: []
+      }
     });
   }
 }
@@ -222,17 +225,23 @@ async function acceptOffer(offer, res, req) {
 }
 
 async function getOffers(offersRequestBody) {
-  let requestHeaders = allHeaders["FlexCapacityRequest"];
-  const accessToken = await getFlexAccessToken();
-  requestHeaders["x-amz-access-token"] = accessToken;
+  try {
+    let requestHeaders = allHeaders["FlexCapacityRequest"];
+    const accessToken = await getFlexAccessToken();
+    requestHeaders["x-amz-access-token"] = accessToken;
 
-  let response = await axios.post("https://flex-capacity-na.amazon.com/GetOffersForProviderPost", offersRequestBody, {
-    headers: requestHeaders,
-  });
-  if(response.status === 200) {
-    return response.data.offerList;
-  } else {
-    return [];
+    let response = await axios.post("https://flex-capacity-na.amazon.com/GetOffersForProviderPost", offersRequestBody, {
+      headers: requestHeaders,
+      timeout: 1000,
+    });
+    if(response.status === 200) {
+      return response.data.offerList;
+    } else {
+      return [];
+    }
+  } catch (error) {
+    console.error('Error en la solicitud getOffers:');
+    return []; // Retorna un array vacío en caso de error
   }
 }
 
