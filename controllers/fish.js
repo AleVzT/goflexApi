@@ -1,5 +1,6 @@
 const axios = require('axios');
 const Users = require('../models/Users');
+const OffersModels = require('../models/Offers');
 const { getAmzDate, generateFRC, generateRandomHexToken } = require('../helpers/fish');
 const { verifyJWT } = require('../helpers/jwt');
 const { offerResponse } = require('../helpers/offerResponse');
@@ -7,6 +8,7 @@ const { notificationSEND } = require('../helpers/send');
 
 let globalUser = null;
 let allServices = null;
+let intervalId = null;
 
 const allHeaders = {
   AmazonApiRequest: {
@@ -113,7 +115,7 @@ async function processOffer(req, res) {
   const token = req.headers['x-token'];
   let warehouseSelect = null;
 
-  try {
+  if (!intervalId) {
     const userData = await verifyJWT(token);
 
     globalUser = await Users.findById(userData.uid );
@@ -140,86 +142,104 @@ async function processOffer(req, res) {
       "serviceAreaIds": warehouseSelect
     };
 
-    let selectedOffer = [];
-    const offersList = await getOffers(offersRequestBody);
-
-    for (const offerResponseObject of offersList) {
-      const offer = new offerResponse(offerResponseObject);
+    const selectedOfferIds = [];
+    intervalId = setInterval(async () => {
+      let selectedOffer = [];
       let dateOffer = null;
       let dateFilter = null;
-      if(startDate) {
-        dateOffer = new Date(offer.startTime);
-        dateFilter = new Date(startDate);
-      }
 
-      if (minBlockRate && offer.blockRate < minBlockRate) {
-        continue;
-      }
+      const offersList = await getOffers(offersRequestBody);
 
-      if (startDate && dateOffer < dateFilter) {
-        continue;
-      }
-    
-      if (minPayRatePerHour && offer.ratePerHour < minPayRatePerHour) {
-        continue;
-      }
-    
-      if (maxHoursBlock && offer.blockDuration > maxHoursBlock) {
-        continue;
-      }
-    
-      if (arrivalBuffer) {
-        const currentTime = new Date().getTime();
-        const deltaTime = ((offer.startTime * 1000) - currentTime) / (1000 * 60);
-        if (deltaTime < arrivalBuffer) {
+      for (const offerResponseObject of offersList) {
+        const offer = new offerResponse(offerResponseObject);
+
+        if (selectedOfferIds.includes(offer.id)) {
           continue;
         }
-      }
-      const respAcceptOffer = await acceptOffer(offer);
 
-      if(respAcceptOffer.status === 200) {
-        selectedOffer.push(offer);
-      }
-    }
+        selectedOfferIds.push(offer.id);
 
-    res.json({
-      offersList,
-      offersAccept: {
-        ok: selectedOffer.length !== 0 ? true : false,
-        offer: selectedOffer
+        if(startDate) {
+          dateOffer = new Date(offer.startTime);
+          dateFilter = new Date(startDate);
+        }
+
+        let status = "refused"; 
+
+        if (minBlockRate && offer.blockRate >= minBlockRate &&
+          (!startDate || dateOffer >= dateFilter) &&
+          (!minPayRatePerHour || offer.ratePerHour >= minPayRatePerHour) &&
+          (!maxHoursBlock || offer.blockDuration <= maxHoursBlock) &&
+          (!arrivalBuffer || (offer.startTime * 1000 - new Date().getTime()) / (1000 * 60) >= arrivalBuffer)) {
+          const seAceptoOferta = await acceptOffer(offer);
+          if (seAceptoOferta) {
+            status = "accepted";
+            selectedOffer.push(offer);
+          }
+        }
+
+        const offersModel = new OffersModels({
+          id: offer.id,
+          expirationDate: offer.expirationDate,
+          startTime: offer.startTime,
+          location: offer.location,
+          blockRate: offer.blockRate,
+          endTime: offer.endTime,
+          hidden: offer.hidden,
+          ratePerHour: offer.ratePerHour,
+          weekday: offer.weekday,
+          blockDuration: offer.blockDuration,
+          userId: userData.uid,
+          status: status
+        });
+
+        await offersModel.save();
+        selectedOfferIds.push(offer.id);
       }
-    });
-  } catch(error) {
-    console.log('Error en la solicitud processOffer', error);
-    res.json({
-      offersList: [],
-      offersAccept: {
-        ok: false,
-        offer: []
-      }
-    });
+    }, 1500);
+    res.json({msj: '¡GoFlex started!'});
+  } else {
+    res.status(500).json({msj: '¡GoFlex is now running!'});
   }
 }
+
+async function stopProcess(req, res) {
+  const token = req.headers['x-token'];
+
+  if (intervalId) {
+    clearInterval(intervalId);
+    intervalId = null; 
+    const userData = await verifyJWT(token);
+
+    await OffersModels.deleteMany({ userId: userData.uid });
+    res.json({msj: '¡Stopped GoFlex!'});
+  } else {
+    res.status(500).json({msj: '¡GoFlex is not running!'});
+  }
+};
 
 async function acceptOffer(offer, res, req) {
   let requestHeaders = allHeaders["FlexCapacityRequest"];
   requestHeaders["X-Amz-Date"] = getAmzDate();
   const data = { offerId: offer.id};
+  try {
 
-  const accessToken = await getFlexAccessToken();
-  requestHeaders["x-amz-access-token"] = accessToken;
-  
-  let response = await axios.post("https://flex-capacity-na.amazon.com/AcceptOffer", data, { headers: requestHeaders });
-  if (response.status === 200){
+    const accessToken = await getFlexAccessToken();
+    requestHeaders["x-amz-access-token"] = accessToken;
+    
+    await axios.post("https://flex-capacity-na.amazon.com/AcceptOffer", data, { headers: requestHeaders });
+    
     const bodySMS = {
       user: globalUser,
       allServices,
       offer
     };
     await notificationSEND(bodySMS);
-    return response;
-  } else {
-    return { status: 401 };
+
+    return true;
+  } catch (error) {
+    console.error('Error en la solicitud acceptOffer');
+    return false;
   }
   
 }
@@ -227,6 +247,7 @@ async function acceptOffer(offer, res, req) {
 async function getOffers(offersRequestBody) {
   try {
     let requestHeaders = allHeaders["FlexCapacityRequest"];
+
     const accessToken = await getFlexAccessToken();
     requestHeaders["x-amz-access-token"] = accessToken;
 
@@ -234,11 +255,8 @@ async function getOffers(offersRequestBody) {
       headers: requestHeaders,
       timeout: 1000,
     });
-    if(response.status === 200) {
-      return response.data.offerList;
-    } else {
-      return [];
-    }
+
+    return response.data.offerList;
   } catch (error) {
     console.error('Error en la solicitud getOffers:');
     return []; // Retorna un array vacío en caso de error
@@ -346,10 +364,26 @@ async function getSMSSEND() { /* PARA HACER PRUEBAS */
   await notificationSEND(bodySMS);
 }
 
+async function getOffersList(req, res) {
+  const token = req.headers['x-token'];
+
+  try {
+    const userData = await verifyJWT(token);
+
+    const oferList = await OffersModels.find({ userId: userData.uid });
+
+    res.json(oferList);
+  }catch (error) {
+    res.status(500).json({ error: 'Error registering account' });
+  }
+}
+
 module.exports = {
   getAllServiceAreas,
   processOffer,
   registerAccount,
   getSMSSEND,
   getEligibleServiceAreas,
+  stopProcess,
+  getOffersList,
 }
