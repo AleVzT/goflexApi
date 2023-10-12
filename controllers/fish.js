@@ -9,6 +9,7 @@ const { notificationSEND } = require('../helpers/send');
 let globalUser = null;
 let allServices = null;
 let intervalId = null;
+let accessToken = null;
 
 const allHeaders = {
   AmazonApiRequest: {
@@ -171,7 +172,7 @@ async function processOffer(req, res) {
           (!minPayRatePerHour || offer.ratePerHour >= minPayRatePerHour) &&
           (!maxHoursBlock || offer.blockDuration <= maxHoursBlock) &&
           (!arrivalBuffer || (offer.startTime * 1000 - new Date().getTime()) / (1000 * 60) >= arrivalBuffer)) {
-          const seAceptoOferta = await acceptOffer(offer);
+            const seAceptoOferta = await acceptOffer(offer);
           if (seAceptoOferta) {
             status = "accepted";
             selectedOffer.push(offer);
@@ -223,10 +224,7 @@ async function acceptOffer(offer, res, req) {
   requestHeaders["X-Amz-Date"] = getAmzDate();
   const data = { offerId: offer.id};
   try {
-
-    const accessToken = await getFlexAccessToken();
     requestHeaders["x-amz-access-token"] = accessToken;
-    
     await axios.post("https://flex-capacity-na.amazon.com/AcceptOffer", data, { headers: requestHeaders });
     
     const bodySMS = {
@@ -238,7 +236,7 @@ async function acceptOffer(offer, res, req) {
 
     return true;
   } catch (error) {
-    console.error('Error en la solicitud acceptOffer');
+    console.error('Error en la solicitud acceptOffer', error.response.data);
     return false;
   }
   
@@ -247,10 +245,8 @@ async function acceptOffer(offer, res, req) {
 async function getOffers(offersRequestBody) {
   try {
     let requestHeaders = allHeaders["FlexCapacityRequest"];
-
-    const accessToken = await getFlexAccessToken();
+    accessToken = await getFlexAccessToken();
     requestHeaders["x-amz-access-token"] = accessToken;
-
     let response = await axios.post("https://flex-capacity-na.amazon.com/GetOffersForProviderPost", offersRequestBody, {
       headers: requestHeaders,
       timeout: 1000,
@@ -258,7 +254,7 @@ async function getOffers(offersRequestBody) {
 
     return response.data.offerList;
   } catch (error) {
-    console.error('Error en la solicitud getOffers:');
+    console.error('Error en la solicitud getOffers');
     return []; // Retorna un array vacío en caso de error
   }
 }
@@ -266,7 +262,7 @@ async function getOffers(offersRequestBody) {
 async function getEligibleServiceAreas(req, res) {
   let requestHeaders = allHeaders["FlexCapacityRequest"];
   try {
-    const accessToken = await getFlexAccessToken(); 
+    accessToken = await getFlexAccessToken(); 
     requestHeaders["X-Amz-Date"] = getAmzDate();
     requestHeaders["x-amz-access-token"] = accessToken;
   
