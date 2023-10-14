@@ -106,12 +106,9 @@ const createUser = async(req, res = response) => {
 
 
 const editUser = async(req, res = response) => {
-
     const userId = req.params.id;
     const uid = req.uid;
-
     try {
-        
         const user = await Users.findById(userId);
 
         if ( !user ) {
@@ -121,14 +118,16 @@ const editUser = async(req, res = response) => {
             });
         }
 
+        const salt = bcrypt.genSaltSync();
         const nuevoUser = {
             ...req.body,
+            email: req.body.email.toLowerCase(),
+            password: bcrypt.hashSync( req.body.password, salt ),
             user: uid
         }
 
         const updateUser = await Users.findByIdAndUpdate( userId, nuevoUser, { new: true } );
         res.json( updateUser );
-
     } catch (error) {
         console.log(error);
         res.status(500).json({

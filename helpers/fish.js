@@ -4,14 +4,7 @@ const zlib = require('zlib');
 
 function getAmzDate() {
   const currentDate = new Date();
-  const year = currentDate.getUTCFullYear();
-  const month = String(currentDate.getUTCMonth() + 1).padStart(2, "0");
-  const day = String(currentDate.getUTCDate()).padStart(2, "0");
-  const hour = String(currentDate.getUTCHours()).padStart(2, "0");
-  const minute = String(currentDate.getUTCMinutes()).padStart(2, "0");
-  const second = String(currentDate.getUTCSeconds()).padStart(2, "0");
-  
-  return `${year}${month}${day}T${hour}${minute}${second}Z`;
+  return currentDate.toISOString().slice(0, 19).replace(/[-:]/g, '');
 }
 
 function parseQueryString(queryString) {
