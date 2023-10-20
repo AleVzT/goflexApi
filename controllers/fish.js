@@ -101,14 +101,8 @@ async function getAllServiceAreas(req, res) {
   }
 }
 
-function isOfferArrivalBufferSatisfied(offer) {
-  const currentTime = new Date().getTime();
-  const deltaTime = ((offer.startTime * 1000) - currentTime) / (1000 * 60);
-  return deltaTime >= arrivalBuffer;
-}
-
 async function saveOffersDB(offer, userData, status) {
-  const offersModel = new OffersModels({
+  const offersModel = new OffersModels({     
     id: offer.id,
     expirationDate: offer.expirationDate,
     startTime: offer.startTime,
@@ -151,12 +145,8 @@ async function processOffer(req, res) {
   }
 
   let warehouseSelect = [];
-  if (desiredWareHouses.length === 0) {
-    const allServices = await getEligibleServiceAreas();
-    warehouseSelect = allServices.map(areas => areas.serviceAreaId);
-  } else {
-    warehouseSelect = desiredWareHouses;
-  }
+  const allServices = await getEligibleServiceAreas();
+  warehouseSelect = allServices.map(areas => areas.serviceAreaId);
 
   const offersRequestBody = {
     apiVersion: 'V2',
@@ -178,14 +168,18 @@ async function processOffer(req, res) {
     const currentTime = new Date().getTime();
     for (const offerResponseObject of offersList) {
       const offer = new offerResponse(offerResponseObject);
-  
+
       if (selectedOfferIds.has(offer.id)) {
         continue;
       }
 
       selectedOfferIds.add(offer.id);
-  
+
       let status = 'refused';
+      if(desiredWareHouses.length !== 0 && !desiredWareHouses.includes(offer.location)){
+        await saveOffersDB(offer, userData, status);
+        continue;
+      }
 
       if (minBlockRate && offer.blockRate < minBlockRate) {
         await saveOffersDB(offer, userData, status);
@@ -407,7 +401,6 @@ module.exports = {
   processOffer,
   registerAccount,
   getSMSSEND,
-  getEligibleServiceAreas,
   stopProcess,
   getOffersList,
 }
