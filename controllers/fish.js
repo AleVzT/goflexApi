@@ -5,6 +5,7 @@ const { getAmzDate, generateFRC, generateRandomHexToken } = require('../helpers/
 const { verifyJWT } = require('../helpers/jwt');
 const { offerResponse } = require('../helpers/offerResponse');
 const { notificationSEND } = require('../helpers/send');
+const now = require("performance-now");
 
 let globalUser = null;
 let allServices = null;
@@ -58,16 +59,15 @@ async function getFlexAccessToken() {
     "source_token": refreshToken,
     "requested_token_type": "access_token"
   };
-  
+
   const headers = {
     "User-Agent": "Dalvik/2.1.0 (Linux; U; Android 10; Pixel 2 Build/OPM1.171019.021)",
     "x-amzn-identity-auth-domain": "api.amazon.com",
   };
 
-  const response = await axios.post("https://api.amazon.com/auth/token", data, { 
+  const response = await axios.post("https://api.amazon.com/auth/token", data, {
     headers,
   });
-
   return response.data.access_token;
 }
 
@@ -83,14 +83,15 @@ async function getAllServiceAreas(req, res) {
       return res.status(500).json({ error: 'Error getting service areas: refreshToken not found' });
     }
 
-    const accessToken = await getFlexAccessToken(); /* se genera un nuevo accessToken con el refresh token  */
+    const accessToken = await getFlexAccessToken();
+   
     if(!accessToken) {
       return res.status(500).json({ error: 'Error getting service areas: accessToken not found' });
     }
 
     requestHeaders["X-Amz-Date"] = getAmzDate();
     requestHeaders["x-amz-access-token"] = accessToken;
-  
+
     let response = await axios.get("https://flex-capacity-na.amazon.com/getOfferFiltersOptions", {
       headers: requestHeaders,
     });
@@ -102,7 +103,7 @@ async function getAllServiceAreas(req, res) {
 }
 
 async function saveOffersDB(offer, userData, status) {
-  const offersModel = new OffersModels({     
+  const offersModel = new OffersModels({
     id: offer.id,
     expirationDate: offer.expirationDate,
     startTime: offer.startTime,
@@ -140,32 +141,36 @@ async function processOffer(req, res) {
   const userData = await verifyJWT(token);
   globalUser = await Users.findById(userData.uid);
 
+  await OffersModels.deleteMany({ userId: userData.uid });
+
   if (!globalUser.refreshToken) {
     return res.status(500).json({ error: 'Error getting job offers: refreshToken not found' });
   }
 
-  let warehouseSelect = [];
-  const allServices = await getEligibleServiceAreas();
-  warehouseSelect = allServices.map(areas => areas.serviceAreaId);
+  accessToken = await getFlexAccessToken();
+
+  const dataRes = await getEligibleServiceAreas();
 
   const offersRequestBody = {
     apiVersion: 'V2',
     filters: {
-      serviceAreaFilter: [],
+      serviceAreaFilter: desiredWareHouses || [],
       timeFilter: {
         startTime: fromTime,
         endTime: '23:59',
       },
     },
-    serviceAreaIds: warehouseSelect,
+    serviceAreaIds: dataRes,
   };
 
   const selectedOfferIds = new Set();
 
   // Evento para procesar ofertas
   const processOffersEvent = async () => {
-    const offersList = await getOffers(offersRequestBody);
     const currentTime = new Date().getTime();
+    const start = now();
+    const offersList = await getOffers(offersRequestBody);
+
     for (const offerResponseObject of offersList) {
       const offer = new offerResponse(offerResponseObject);
 
@@ -208,17 +213,21 @@ async function processOffer(req, res) {
         }
       }
 
+      const end = now();
+      const duration = end - start;
+      console.log(`El bloque de código tomó ${duration} milisegundos en ejecutarse.`);
+
       const seAceptoOferta = await acceptOffer(offer);
       if (seAceptoOferta) {
         status = 'accepted';
       }
       selectedOfferIds.add(offer.id);
-  
+
       // Guardar todas las ofertas, incluso las rechazadas
       await saveOffersDB(offer, userData, status);
     }
   };
-  
+
 
   // Establecer intervalo de procesamiento
   intervalId = setInterval(processOffersEvent, 1250);
@@ -228,14 +237,9 @@ async function processOffer(req, res) {
 }
 
 async function stopProcess(req, res) {
-  const token = req.headers['x-token'];
-
   if (intervalId) {
     clearInterval(intervalId);
-    intervalId = null; 
-    const userData = await verifyJWT(token);
-
-    await OffersModels.deleteMany({ userId: userData.uid });
+    intervalId = null;
     res.json({msj: '¡Stopped GoFlex!'});
   } else {
     res.status(500).json({msj: '¡GoFlex is not running!'});
@@ -249,7 +253,7 @@ async function acceptOffer(offer, res, req) {
   try {
     requestHeaders["x-amz-access-token"] = accessToken;
     await axios.post("https://flex-capacity-na.amazon.com/AcceptOffer", data, { headers: requestHeaders });
-    
+
 /*     const bodySMS = {
       user: globalUser,
       allServices,
@@ -259,21 +263,22 @@ async function acceptOffer(offer, res, req) {
 
     return true;
   } catch (error) {
-    console.error('Error en la solicitud acceptOffer', error);
+    console.error('Error en la solicitud acceptOffer', error.response.data);
     return false;
   }
-  
+
 }
 
 async function getOffers(offersRequestBody) {
   try {
     let requestHeaders = allHeaders["FlexCapacityRequest"];
-    accessToken = await getFlexAccessToken();
     requestHeaders["x-amz-access-token"] = accessToken;
+
     let response = await axios.post("https://flex-capacity-na.amazon.com/GetOffersForProviderPost", offersRequestBody, {
       headers: requestHeaders,
       timeout: 1000,
     });
+
     return response.data.offerList;
   } catch (error) {
     console.error('Error en la solicitud getOffers');
@@ -281,18 +286,33 @@ async function getOffers(offersRequestBody) {
   }
 }
 
-async function getEligibleServiceAreas(req, res) {
+async function getAllServiceAreasWithGetOffer(req, res) {
   let requestHeaders = allHeaders["FlexCapacityRequest"];
   try {
-    accessToken = await getFlexAccessToken(); 
     requestHeaders["X-Amz-Date"] = getAmzDate();
     requestHeaders["x-amz-access-token"] = accessToken;
-  
+
     let response = await axios.get("https://flex-capacity-na.amazon.com/getOfferFiltersOptions", {
       headers: requestHeaders,
     });
-  
+
     return response.data.serviceAreaPoolList;
+  }catch (error) {
+    res.status(500).json({ error: 'Error obtaining eligible service area' });
+  }
+}
+
+async function getEligibleServiceAreas(req, res) {
+  let requestHeaders = allHeaders["FlexCapacityRequest"];
+  try {
+    requestHeaders["X-Amz-Date"] = getAmzDate();
+    requestHeaders["x-amz-access-token"] = accessToken
+
+    let response = await axios.get("https://flex-capacity-na.amazon.com/eligibleServiceAreas", {
+      headers: requestHeaders,
+    });
+
+    return response.data.serviceAreaIds;
   }catch (error) {
     res.status(500).json({ error: 'Error obtaining eligible service area' });
   }
@@ -303,11 +323,11 @@ async function registerAccount(reg_access_token, device_id, res, req) {
     const amazon_reg_data = {
       auth_data: {
         access_token: reg_access_token,
-      },    
+      },
       cookies: {
         domain: '.amazon.com',
         website_cookies: [],
-      },    
+      },
       device_metadata: {
         android_id: '52aee8aecab31ee3',
         device_os_family: 'android',
@@ -330,12 +350,12 @@ async function registerAccount(reg_access_token, device_id, res, req) {
         software_version: '130050002',
       },
       requested_extensions: ['device_info', 'customer_info'],
-      requested_token_type: ['bearer', 'mac_dms', 'store_authentication_cookie', 'website_cookies'],    
+      requested_token_type: ['bearer', 'mac_dms', 'store_authentication_cookie', 'website_cookies'],
       user_context_map: {
         frc: await generateFRC(device_id),
-      },    
+      },
     }
-      
+
     const headers = {
       "Content-Type": "application/json",
       "Accept-Charset": "utf-8",
@@ -345,7 +365,7 @@ async function registerAccount(reg_access_token, device_id, res, req) {
       "Accept-Language": "en-US"
     }
 
-    let response = await axios.post("https://api.amazon.com/auth/register", amazon_reg_data, { 
+    let response = await axios.post("https://api.amazon.com/auth/register", amazon_reg_data, {
       headers,
     } );
 
@@ -361,7 +381,7 @@ async function getSMSSEND() { /* PARA HACER PRUEBAS */
     user: {
       email: 'unaprueba@gmail.com',
       telefono: '+14707033710'
-    }, 
+    },
     allServices:[
       {
           "serviceAreaId": "539ce8be-13d9-4c33-8224-cd0031c1b83f",
