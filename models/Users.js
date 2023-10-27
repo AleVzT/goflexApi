@@ -34,6 +34,10 @@ const UsuarioSchema = Schema ({
     type: Boolean,
     required: true
   },
+  isServiceActive: {
+    type: Boolean,
+    default: false
+  }
 })
 
 module.exports = model('Users', UsuarioSchema);

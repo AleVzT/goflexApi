@@ -7,10 +7,10 @@ const { offerResponse } = require('../helpers/offerResponse');
 const { notificationSEND } = require('../helpers/send');
 const now = require("performance-now");
 
-let globalUser = null;
-let allServices = null;
-let intervalId = null;
-let accessToken = null;
+
+let intervalReference = null;
+let shouldStopProcess = false;
+const userStates = new Map();
 
 const allHeaders = {
   AmazonApiRequest: {
@@ -50,8 +50,8 @@ const DEVICE_NAME = "Le X522";
 const MANUFACTURER = "LeMobile";
 const OS_VERSION = "LeEco/Le2_NA/le_s2_na:6.0.1/IFXNAOP5801910272S/61:user/release-keys";
 
-async function getFlexAccessToken() {
-  const refreshToken = globalUser.refreshToken || null;
+async function getFlexAccessToken(sessionUser) {
+  const refreshToken = sessionUser.refreshToken || null;
   const data = {
     "app_name": APP_NAME,
     "app_version": APP_VERSION,
@@ -78,12 +78,12 @@ async function getAllServiceAreas(req, res) {
     const token = req.headers['x-token'];
     const userData = await verifyJWT(token);
 
-    globalUser = await Users.findById(userData.uid );
-    if(!globalUser.refreshToken) {
+    const userLogger = await Users.findById(userData.uid );
+    if(!userLogger.refreshToken) {
       return res.status(500).json({ error: 'Error getting service areas: refreshToken not found' });
     }
 
-    const accessToken = await getFlexAccessToken();
+    const accessToken = await getFlexAccessToken(userLogger);
    
     if(!accessToken) {
       return res.status(500).json({ error: 'Error getting service areas: accessToken not found' });
@@ -114,7 +114,7 @@ async function saveOffersDB(offer, userData, status) {
     ratePerHour: offer.ratePerHour,
     weekday: offer.weekday,
     blockDuration: offer.blockDuration,
-    userId: userData.uid,
+    userId: userData.id,
     status,
   });
   await offersModel.save();
@@ -134,22 +134,22 @@ async function processOffer(req, res) {
 
   const token = req.headers['x-token'];
 
-  if (intervalId) {
+  const userData = await verifyJWT(token);
+  const sessionUser = await Users.findById(userData.uid);
+
+  if (userStates.has(sessionUser.id) && userStates.get(sessionUser.id).isServiceActive) {
     return res.status(500).json({ msj: '¡GoFlex is now running!' });
   }
 
-  const userData = await verifyJWT(token);
-  globalUser = await Users.findById(userData.uid);
-
   await OffersModels.deleteMany({ userId: userData.uid });
 
-  if (!globalUser.refreshToken) {
+  if (!sessionUser.refreshToken) {
     return res.status(500).json({ error: 'Error getting job offers: refreshToken not found' });
   }
 
-  accessToken = await getFlexAccessToken();
+  const accessToken = await getFlexAccessToken(sessionUser);
 
-  const dataRes = await getEligibleServiceAreas();
+  const dataRes = await getEligibleServiceAreas(accessToken);
 
   const offersRequestBody = {
     apiVersion: 'V2',
@@ -167,9 +167,10 @@ async function processOffer(req, res) {
 
   // Evento para procesar ofertas
   const processOffersEvent = async () => {
+    const userLogger = await Users.findById(sessionUser.id);
     const currentTime = new Date().getTime();
     const start = now();
-    const offersList = await getOffers(offersRequestBody);
+    const offersList = await getOffers(offersRequestBody, accessToken);
 
     for (const offerResponseObject of offersList) {
       const offer = new offerResponse(offerResponseObject);
@@ -182,33 +183,33 @@ async function processOffer(req, res) {
 
       let status = 'refused';
       if(desiredWareHouses.length !== 0 && !desiredWareHouses.includes(offer.location)){
-        await saveOffersDB(offer, userData, status);
+        await saveOffersDB(offer, userLogger, status);
         continue;
       }
 
       if (minBlockRate && offer.blockRate < minBlockRate) {
-        await saveOffersDB(offer, userData, status);
+        await saveOffersDB(offer, userLogger, status);
         continue;
       }
 
       if (startDate &&  new Date(offer.startTime) < new Date(startDate)) {
-        await saveOffersDB(offer, userData, status);
+        await saveOffersDB(offer, userLogger, status);
         continue;
       }
 
       if (minPayRatePerHour && offer.ratePerHour < minPayRatePerHour) {
-        await saveOffersDB(offer, userData, status);
+        await saveOffersDB(offer, userLogger, status);
         continue;
       }
 
       if (maxHoursBlock && offer.blockDuration > maxHoursBlock) {
-        await saveOffersDB(offer, userData, status);
+        await saveOffersDB(offer, userLogger, status);
         continue;
       }
       if (arrivalBuffer) {
         const deltaTime = ((offer.startTime * 1000) - currentTime) / (1000 * 60);
         if (deltaTime < arrivalBuffer) {
-          await saveOffersDB(offer, userData, status);
+          await saveOffersDB(offer, userLogger, status);
           continue;
         }
       }
@@ -217,36 +218,44 @@ async function processOffer(req, res) {
       const duration = end - start;
       console.log(`El bloque de código tomó ${duration} milisegundos en ejecutarse.`);
 
-      const seAceptoOferta = await acceptOffer(offer);
+      const seAceptoOferta = await acceptOffer(offer, userLogger, accessToken);
       if (seAceptoOferta) {
         status = 'accepted';
       }
       selectedOfferIds.add(offer.id);
 
       // Guardar todas las ofertas, incluso las rechazadas
-      await saveOffersDB(offer, userData, status);
+      await saveOffersDB(offer, userLogger, status);
     }
   };
 
 
   // Establecer intervalo de procesamiento
-  intervalId = setInterval(processOffersEvent, 1250);
+  userStates.set(sessionUser.id, { isServiceActive: true });
+  intervalReference = setInterval(processOffersEvent, 1250);
   processOffersEvent(); // Procesar inmediatamente
 
   res.json({ msj: '¡GoFlex started!' });
 }
 
 async function stopProcess(req, res) {
-  if (intervalId) {
-    clearInterval(intervalId);
-    intervalId = null;
-    res.json({msj: '¡Stopped GoFlex!'});
+  shouldStopProcess = true;
+  const token = req.headers['x-token'];
+
+  const userData = await verifyJWT(token);
+  const sessionUser = await Users.findById(userData.uid);
+
+  if (userStates.has(sessionUser.id) && userStates.get(sessionUser.id).isServiceActive) {
+    // Cambiar el valor de 'isServiceActive' a 'false' para el usuario específico
+    userStates.get(sessionUser.id).isServiceActive = false;
+    clearInterval(intervalReference); // Detener el intervalo
+    res.json({ msj: '¡Stopped GoFlex!' });
   } else {
-    res.status(500).json({msj: '¡GoFlex is not running!'});
+    res.status(500).json({ msj: '¡GoFlex is not running for this user!' });
   }
 };
 
-async function acceptOffer(offer, res, req) {
+async function acceptOffer(offer, sessionUser, accessToken) {
   let requestHeaders = allHeaders["FlexCapacityRequest"];
   requestHeaders["X-Amz-Date"] = getAmzDate();
   const data = { offerId: offer.id};
@@ -255,7 +264,7 @@ async function acceptOffer(offer, res, req) {
     await axios.post("https://flex-capacity-na.amazon.com/AcceptOffer", data, { headers: requestHeaders });
 
 /*     const bodySMS = {
-      user: globalUser,
+      user: sessionUser,
       allServices,
       offer
     };
@@ -269,7 +278,7 @@ async function acceptOffer(offer, res, req) {
 
 }
 
-async function getOffers(offersRequestBody) {
+async function getOffers(offersRequestBody, accessToken) {
   try {
     let requestHeaders = allHeaders["FlexCapacityRequest"];
     requestHeaders["x-amz-access-token"] = accessToken;
@@ -286,23 +295,7 @@ async function getOffers(offersRequestBody) {
   }
 }
 
-async function getAllServiceAreasWithGetOffer(req, res) {
-  let requestHeaders = allHeaders["FlexCapacityRequest"];
-  try {
-    requestHeaders["X-Amz-Date"] = getAmzDate();
-    requestHeaders["x-amz-access-token"] = accessToken;
-
-    let response = await axios.get("https://flex-capacity-na.amazon.com/getOfferFiltersOptions", {
-      headers: requestHeaders,
-    });
-
-    return response.data.serviceAreaPoolList;
-  }catch (error) {
-    res.status(500).json({ error: 'Error obtaining eligible service area' });
-  }
-}
-
-async function getEligibleServiceAreas(req, res) {
+async function getEligibleServiceAreas(accessToken) {
   let requestHeaders = allHeaders["FlexCapacityRequest"];
   try {
     requestHeaders["X-Amz-Date"] = getAmzDate();
@@ -314,7 +307,8 @@ async function getEligibleServiceAreas(req, res) {
 
     return response.data.serviceAreaIds;
   }catch (error) {
-    res.status(500).json({ error: 'Error obtaining eligible service area' });
+    console.log('Error obtaining eligible service area');
+    return [];
   }
 }
 
@@ -376,32 +370,6 @@ async function registerAccount(reg_access_token, device_id, res, req) {
   }
 }
 
-async function getSMSSEND() { /* PARA HACER PRUEBAS */
-  const bodySMS = {
-    user: {
-      email: 'unaprueba@gmail.com',
-      telefono: '+14707033710'
-    },
-    allServices:[
-      {
-          "serviceAreaId": "539ce8be-13d9-4c33-8224-cd0031c1b83f",
-          "serviceAreaName": "Norcross GA (VGA1) - Sub Same-Day"
-      },
-      {
-          "serviceAreaId": "8b6632cb-4ae2-4993-97d0-72d8340fe1be",
-          "serviceAreaName": "Lithia Springs GA (VGA2) - Sub Same-Day"
-      },
-    ],
-    offer : {
-      location: '8b6632cb-4ae2-4993-97d0-72d8340fe1be',
-      startTime: 'Sun Oct 01 2023 07:30:00 GMT-0300 (hora estándar de Argentina)',
-      blockDuration: '2.5',
-      blockRate: 50,
-    }
-  };
-  await notificationSEND(bodySMS);
-}
-
 async function getOffersList(req, res) {
   const token = req.headers['x-token'];
 
@@ -412,7 +380,7 @@ async function getOffersList(req, res) {
 
     res.json(oferList);
   }catch (error) {
-    res.status(500).json({ error: 'Error registering account' });
+    res.status(500).json({ error: 'Error getOffersList' });
   }
 }
 
@@ -420,7 +388,6 @@ module.exports = {
   getAllServiceAreas,
   processOffer,
   registerAccount,
-  getSMSSEND,
   stopProcess,
   getOffersList,
 }
