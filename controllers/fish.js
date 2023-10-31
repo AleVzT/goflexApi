@@ -249,6 +249,7 @@ async function stopProcess(req, res) {
     // Cambiar el valor de 'isServiceActive' a 'false' para el usuario específico
     userStates.get(sessionUser.id).isServiceActive = false;
     clearInterval(intervalReference); // Detener el intervalo
+    await collection.updateMany({}, { $set: { hidden: false } });
     res.json({ msj: '¡Stopped GoFlex!' });
   } else {
     res.status(500).json({ msj: '¡GoFlex is not running for this user!' });
@@ -376,7 +377,7 @@ async function getOffersList(req, res) {
   try {
     const userData = await verifyJWT(token);
 
-    const oferList = await OffersModels.find({ userId: userData.uid });
+    const oferList = await OffersModels.find({ userId: userData.uid, hidden: true  });
 
     res.json(oferList);
   }catch (error) {
